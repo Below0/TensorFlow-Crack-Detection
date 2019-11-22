@@ -1,0 +1,44 @@
+item {
+  id : 1
+  name : 'Hole'
+}
+item {
+  id : 2
+  name : 'Pipe damaged'
+}
+item {
+  id : 3
+  name : 'crack'
+}
+item {
+  id : 4
+  name : 'Protrusion'
+}
+item {
+  id : 5
+  name : 'Joint'
+}
+item {
+  id : 6
+  name : 'Connection fault'
+}
+item {
+  id : 7
+  name : 'Joint breakaway'
+}
+item {
+  id : 8
+  name : 'Stack'
+}
+item {
+  id : 9
+  name : 'Surface damaged'
+}
+item {
+  id : 10
+  name : 'Root'
+}
+item {
+  id : 11
+  name : 'Unused'
+}
