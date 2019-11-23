@@ -1,185 +1,176 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+from __future__ import absolute_import, division, print_function, unicode_literals
 
-r"""Training executable for detection models.
-
-This executable is used to train DetectionModels. There are two ways of
-configuring the training job:
-
-1) A single pipeline_pb2.TrainEvalPipelineConfig configuration file
-can be specified by --pipeline_config_path.
-
-Example usage:
-    ./train \
-        --logtostderr \
-        --train_dir=path/to/train_dir \
-        --pipeline_config_path=pipeline_config.pbtxt
-
-2) Three configuration files can be provided: a model_pb2.DetectionModel
-configuration file to define what type of DetectionModel is being trained, an
-input_reader_pb2.InputReader file to specify what training data will be used and
-a train_pb2.TrainConfig file to configure training parameters.
-
-Example usage:
-    ./train \
-        --logtostderr \
-        --train_dir=path/to/train_dir \
-        --model_config_path=model_config.pbtxt \
-        --train_config_path=train_config.pbtxt \
-        --input_config_path=train_input_config.pbtxt
-"""
-
-import functools
-import json
-import os
+import os, sys
 import tensorflow as tf
-from tensorflow.contrib import framework as contrib_framework
+#from keras.layers.normalization import BatchNormalization
+#from keras.layers.convolutional import Conv2D
+#from keras.layers.convolutional import MaxPooling2D
+from tensorflow.keras.layers import Dense, Flatten, Conv2D
+#from keras.layers.core import Dropout
+#from keras.layers.core import Activation
+from tensorflow.keras import Model
+import load_image as li
+import numpy as np
 
-from object_detection.builders import dataset_builder
-from object_detection.builders import graph_rewriter_builder
-from object_detection.builders import model_builder
-from object_detection.legacy import trainer
-from object_detection.utils import config_util
+if len(sys.argv) < 2:
+    sys.exit()
+image_dir = sys.argv[1]
+image_dir_2 = sys.argv[2]
+image_dir_3 = sys.argv[3]
+image_dir_4 = sys.argv[4]
 
-tf.logging.set_verbosity(tf.logging.INFO)
+re_shape = (240,240)
+yes_data = li.convert_images_to_data(image_dir, re_shape)
+no_data = li.convert_images_to_data(image_dir_2, re_shape)
+yes_label = np.full((yes_data.shape[0], 1), 1)
+no_label = np.full((no_data.shape[0], 1), 0)
+yes_test_data = li.convert_images_to_data(image_dir_3, re_shape)
+yes_test_label = np.full((yes_test_data.shape[0], 1), 1)
+no_test_data = li.convert_images_to_data(image_dir_4, re_shape)
+no_test_label = np.full((no_test_data.shape[0], 1), 0)
 
-flags = tf.app.flags
-flags.DEFINE_string('master', '', 'Name of the TensorFlow master to use.')
-flags.DEFINE_integer('task', 0, 'task id')
-flags.DEFINE_integer('num_clones', 1, 'Number of clones to deploy per worker.')
-flags.DEFINE_boolean('clone_on_cpu', False,
-                     'Force clones to be deployed on CPU.  Note that even if '
-                     'set to False (allowing ops to run on gpu), some ops may '
-                     'still be run on the CPU if they have no GPU kernel.')
-flags.DEFINE_integer('worker_replicas', 1, 'Number of worker+trainer '
-                     'replicas.')
-flags.DEFINE_integer('ps_tasks', 0,
-                     'Number of parameter server tasks. If None, does not use '
-                     'a parameter server.')
-flags.DEFINE_string('train_dir', '',
-                    'Directory to save the checkpoints and training summaries.')
+print(yes_data.shape, no_data.shape)
+print(yes_label.shape, no_label.shape)
+data = list(yes_data)
+data += list(no_data)
+data_label = list(yes_label)
+data_label += list(no_label)
 
-flags.DEFINE_string('pipeline_config_path', '',
-                    'Path to a pipeline_pb2.TrainEvalPipelineConfig config '
-                    'file. If provided, other configs are ignored')
+test_data = list(yes_test_data)
+test_data += list(no_test_data)
+test_label = list(yes_test_label)
+test_label += list(no_test_label)
 
-flags.DEFINE_string('train_config_path', '',
-                    'Path to a train_pb2.TrainConfig config file.')
-flags.DEFINE_string('input_config_path', '',
-                    'Path to an input_reader_pb2.InputReader config file.')
-flags.DEFINE_string('model_config_path', '',
-                    'Path to a model_pb2.DetectionModel config file.')
+np_data = np.array(data)
+np_label = np.array(data_label)
 
-FLAGS = flags.FLAGS
+np_test_data = np.array(test_data)
+np_test_label = np.array(test_label)
+print(np_data.shape)
+print(np_label.shape)
+np_data = np_data.astype('float64')
+np_label = np_label.astype('float64')
+np_test_data = np_test_data.astype('float64')
+np_test_label = np_test_label.astype('float64')
+(x_train, y_train), (x_test, y_test) = (np_data, np_label), (np_test_data, np_test_label)
 
+train_ds = tf.data.Dataset.from_tensor_slices((x_train, y_train)).shuffle(10000).batch(32)
+test_ds = tf.data.Dataset.from_tensor_slices((x_test, y_test)).batch(32)
 
-@contrib_framework.deprecated(None, 'Use object_detection/model_main.py.')
-def main(_):
-  assert FLAGS.train_dir, '`train_dir` is missing.'
-  if FLAGS.task == 0: tf.gfile.MakeDirs(FLAGS.train_dir)
-  if FLAGS.pipeline_config_path:
-    configs = config_util.get_configs_from_pipeline_file(
-        FLAGS.pipeline_config_path)
-    if FLAGS.task == 0:
-      tf.gfile.Copy(FLAGS.pipeline_config_path,
-                    os.path.join(FLAGS.train_dir, 'pipeline.config'),
-                    overwrite=True)
-  else:
-    configs = config_util.get_configs_from_multiple_files(
-        model_config_path=FLAGS.model_config_path,
-        train_config_path=FLAGS.train_config_path,
-        train_input_config_path=FLAGS.input_config_path)
-    if FLAGS.task == 0:
-      for name, config in [('model.config', FLAGS.model_config_path),
-                           ('train.config', FLAGS.train_config_path),
-                           ('input.config', FLAGS.input_config_path)]:
-        tf.gfile.Copy(config, os.path.join(FLAGS.train_dir, name),
-                      overwrite=True)
+class MyModel(Model):
+  def __init__(self):
+      super(MyModel, self).__init__()
+      self.conv1 = Conv2D(3, 3, input_shape=(240, 240), activation='relu')
+      self.flatten = Flatten()
+      self.d1 = Dense(128, activation='relu')
+      self.d2 = Dense(10, activation='softmax')
+  def call(self, x):
+      x = self.conv1(x)
+      x = self.conv1(x)
+      x = self.d1(x)
+      return self.d2(x)
+from keras import backend as K
+K.clear_session()
+#model = MyModel()
+inputShape = (240, 240, 3)
+model = tf.keras.models.Sequential([
+  #tf.keras.layers.Flatten(input_shape=inputShape),
+  #Conv2D(32, (3, 3), padding="same",input_shape=inputShape),
+  #tf.keras.layers.Dense(240, activation='relu'),
+  #tf.keras.layers.Dropout(0.2),
+  #tf.keras.layers.Dense(360, activation='softmax'),
+  #tf.keras.layers.Dropout(0.2),
+  #tf.keras.layers.Dense(240, activation='relu'),
+  #tf.keras.layers.Dropout(0.2),
+  #tf.keras.layers.Dense(100, activation='softmax'),
+  #tf.keras.layers.Dropout(0.2),
+  #tf.keras.layers.Dense(30, activation='relu'),
+  #tf.keras.layers.Dropout(0.2),
+  #tf.keras.layers.Dense(15, activation='softmax'),
+  #tf.keras.layers.Dropout(0.2),
+  #tf.keras.layers.Dense(2, activation='relu')
+])
+chanDim=1
+# CONV => RELU => POOL
+model.add(Conv2D(32, (3, 3), padding="same",input_shape=inputShape))
+#model.add(tf.keras.layers.Dense(240, activation='softmax'))
+model.add(tf.keras.layers.Dense(240, activation='relu'))
+#model.add(BatchNormalization())
+model.add(tf.keras.layers.MaxPooling2D(pool_size=(3, 3)))
+#model.add(tf.keras.layers.Dropout(0.25))
 
-  model_config = configs['model']
-  train_config = configs['train_config']
-  input_config = configs['train_input_config']
+# (CONV => RELU) * 2 => POOL
+model.add(Conv2D(64, (3, 3), padding="same"))
+model.add(tf.keras.layers.Dense(64, activation='relu'))
+#model.add(BatchNormalization(axis=chanDim))
+model.add(Conv2D(64, (3, 3), padding="same"))
+model.add(tf.keras.layers.Dense(64, activation='relu'))
+#model.add(BatchNormalization(axis=chanDim))
+model.add(tf.keras.layers.MaxPooling2D(pool_size=(2, 2)))
+#model.add(tf.keras.layers.Dropout(0.25))
 
-  model_fn = functools.partial(
-      model_builder.build,
-      model_config=model_config,
-      is_training=True)
+# (CONV => RELU) * 2 => POOL
+model.add(Conv2D(128, (3, 3), padding="same"))
+model.add(tf.keras.layers.Dense(32, activation='relu'))
+#model.add(BatchNormalization(axis=chanDim))
+model.add(Conv2D(128, (3, 3), padding="same"))
+model.add(tf.keras.layers.Dense(32, activation='relu'))
+#model.add(BatchNormalization(axis=chanDim))
+model.add(tf.keras.layers.MaxPooling2D(pool_size=(2, 2)))
+#model.add(tf.keras.layers.Dropout(0.25))
+# first (and only) set of FC => RELU layers
+model.add(tf.keras.layers.Flatten())
+#model.add(Dense(128))
+model.add(tf.keras.layers.Dense(1024, activation='relu'))
+#model.add(BatchNormalization())
+#model.add(tf.keras.layers.Dropout(0.5))
 
-  def get_next(config):
-    return dataset_builder.make_initializable_iterator(
-        dataset_builder.build(config)).get_next()
+# use a *softmax* activation for single-label classification
+# and *sigmoid* activation for multi-label classification
+#model.add(Dense(classes))
+model.add(tf.keras.layers.Dense(2, activation='relu'))
 
-  create_input_dict_fn = functools.partial(get_next, input_config)
+loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
 
-  env = json.loads(os.environ.get('TF_CONFIG', '{}'))
-  cluster_data = env.get('cluster', None)
-  cluster = tf.train.ClusterSpec(cluster_data) if cluster_data else None
-  task_data = env.get('task', None) or {'type': 'master', 'index': 0}
-  task_info = type('TaskSpec', (object,), task_data)
+optimizer = tf.keras.optimizers.Adam()
 
-  # Parameters for a single worker.
-  ps_tasks = 0
-  worker_replicas = 1
-  worker_job_name = 'lonely_worker'
-  task = 0
-  is_chief = True
-  master = ''
+train_loss = tf.keras.metrics.Mean(name='train_loss')
+train_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='train_accuracy')
 
-  if cluster_data and 'worker' in cluster_data:
-    # Number of total worker replicas include "worker"s and the "master".
-    worker_replicas = len(cluster_data['worker']) + 1
-  if cluster_data and 'ps' in cluster_data:
-    ps_tasks = len(cluster_data['ps'])
+test_loss = tf.keras.metrics.Mean(name='test_loss')
+test_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='test_accuracy')
 
-  if worker_replicas > 1 and ps_tasks < 1:
-    raise ValueError('At least 1 ps task is needed for distributed training.')
+@tf.function
+def train_step(images, labels):
+  with tf.GradientTape() as tape:
+    predictions = model(images)
+    loss = loss_object(labels, predictions)
+  gradients = tape.gradient(loss, model.trainable_variables)
+  optimizer.apply_gradients(zip(gradients, model.trainable_variables))
 
-  if worker_replicas >= 1 and ps_tasks > 0:
-    # Set up distributed training.
-    server = tf.train.Server(tf.train.ClusterSpec(cluster), protocol='grpc',
-                             job_name=task_info.type,
-                             task_index=task_info.index)
-    if task_info.type == 'ps':
-      server.join()
-      return
+  train_loss(loss)
+  train_accuracy(labels, predictions)
 
-    worker_job_name = '%s/task:%d' % (task_info.type, task_info.index)
-    task = task_info.index
-    is_chief = (task_info.type == 'master')
-    master = server.target
+@tf.function
+def test_step(images, labels):
+  predictions = model(images)
+  t_loss = loss_object(labels, predictions)
 
-  graph_rewriter_fn = None
-  if 'graph_rewriter_config' in configs:
-    graph_rewriter_fn = graph_rewriter_builder.build(
-        configs['graph_rewriter_config'], is_training=True)
+  test_loss(t_loss)
+  test_accuracy(labels, predictions)
 
-  trainer.train(
-      create_input_dict_fn,
-      model_fn,
-      train_config,
-      master,
-      task,
-      FLAGS.num_clones,
-      worker_replicas,
-      FLAGS.clone_on_cpu,
-      ps_tasks,
-      worker_job_name,
-      is_chief,
-      FLAGS.train_dir,
-      graph_hook_fn=graph_rewriter_fn)
+EPOCHS = 5
 
+for epoch in range(EPOCHS):
+  for images, labels in train_ds:
+    train_step(images, labels)
 
-if __name__ == '__main__':
-  tf.app.run()
+  for test_images, test_labels in test_ds:
+    test_step(test_images, test_labels)
+
+  template = '에포크: {}, 손실: {}, 정확도: {}, 테스트 손실: {}, 테스트 정확도: {}'
+  print (template.format(epoch+1,
+                         train_loss.result(),
+                         train_accuracy.result()*100,
+                         test_loss.result(),
+                         test_accuracy.result()*100))
